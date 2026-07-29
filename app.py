@@ -97,8 +97,35 @@ if df is not None:
         target = st.selectbox(
             "Select Target Column (what you want to predict)",
             df.columns,
-            index=default_index
+            index=default_index,
+            help="Pick a categorical column with a small number of classes "
+                 "(e.g. Exited, Geography) — not a continuous number like salary."
         )
+
+        n_unique = df[target].nunique()
+        n_rows = len(df)
+
+        # Guardrail: this app does classification, not regression.
+        # A near-continuous column (like EstimatedSalary) will break stratified
+        # splitting and isn't something a classifier should predict anyway.
+        if n_unique > 20 or n_unique > 0.5 * n_rows:
+            st.error(
+                f"⚠️ **'{target}'** has {n_unique} unique values — too many for a "
+                "classification target (it looks continuous, like a salary or ID). "
+                "This app predicts categories (e.g. Exited: 0/1, Geography: 3 countries). "
+                "Please pick a column with a small, fixed set of categories instead."
+            )
+            st.stop()
+
+        # Guardrail: every class needs at least 2 samples for a stratified split.
+        value_counts = df[target].value_counts()
+        if (value_counts < 2).any():
+            st.error(
+                f"⚠️ **'{target}'** has at least one category with only 1 sample, "
+                "which isn't enough to split into train/test sets. Please pick a "
+                "different target column."
+            )
+            st.stop()
 
     # ---------------------------
     # Preprocessing (shared across tabs)
@@ -126,7 +153,7 @@ if df is not None:
     bool_cols = X.select_dtypes(include="bool").columns
     X[bool_cols] = X[bool_cols].astype(int)
 
-    if y.dtype == "object":
+    if not pd.api.types.is_numeric_dtype(y):
         le = LabelEncoder()
         y = le.fit_transform(y)
 
@@ -134,11 +161,17 @@ if df is not None:
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
+    n_classes = len(np.unique(y))
+    # "logloss" is valid for binary targets only; multi-class targets
+    # (e.g. Geography with 3 countries) need "mlogloss", otherwise XGBoost
+    # raises a ValueError at fit time.
+    xgb_eval_metric = "logloss" if n_classes == 2 else "mlogloss"
+
     models = {
         "Logistic Regression": LogisticRegression(max_iter=1000),
         "Decision Tree": DecisionTreeClassifier(random_state=42),
         "Random Forest": RandomForestClassifier(random_state=42),
-        "XGBoost": XGBClassifier(eval_metric="logloss", random_state=42)
+        "XGBoost": XGBClassifier(eval_metric=xgb_eval_metric, random_state=42)
     }
 
     results = []
